@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Simple CRUD web service. State is stored in a DynamoDB table.
+Resources:
+  GetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.get
+      Runtime: nodejs4.3
+      Policies: AmazonDynamoDBReadOnlyAccess
+      CodeUri: ./app
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+      Events:
+        GetResource:
+          Type: Api
+          Properties:
+            Path: /resource/{resourceId}
+            Method: get
+      Policies:
+        - AWSXrayWriteOnlyAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}'
+              Action:
+                - 'dynamodb:GetItem'
+  PutFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.put
+      Runtime: nodejs4.3
+      Policies: AmazonDynamoDBFullAccess
+      CodeUri: ./app
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+      Events:
+        PutResource:
+          Type: Api
+          Properties:
+            Path: /resource/{resourceId}
+            Method: put
+      Policies:
+        - AWSXrayWriteOnlyAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}'
+              Action:
+                - 'dynamodb:PutItem'
+  DeleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: index.delete
+      Runtime: nodejs4.3
+      Policies: AmazonDynamoDBFullAccess
+      CodeUri: ./app
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref Table
+      Events:
+        DeleteResource:
+          Type: Api
+          Properties:
+            Path: /resource/{resourceId}
+            Method: delete
+      Policies:
+        - AWSXrayWriteOnlyAccess
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Table}'
+              Action:
+                - 'dynamodb:DeleteItem'
+  Table:
+    Type: AWS::Serverless::SimpleTable
+  EnableXrayRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        -
+          PolicyName: "UpdateFunctionConfiguration"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "lambda:UpdateFunctionConfiguration"
+                Resource: "*"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  EnableXrayFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: 'xrat-test-enable-xray'
+      Handler: "index.handler"
+      Role: !GetAtt EnableXrayRole.Arn
+      Runtime: "nodejs6.10"
+      Timeout: "5"
+      Environment:
+        Variables:
+          GET_FUNCTION: !Ref GetFunction
+          PUT_FUNCTION: !Ref PutFunction
+          DELETE_FUNCTION: !Ref DeleteFunction
+      Tags:
+        -
+          Key: Project
+          Value: "CSV parsing POC"
+      Code:
+        ZipFile: >
+          'use strict';
+          const aws = require('aws-sdk');
+
+          aws.config.region = process.env.AWS_DEFAULT_REGION;
+          const lambda = new aws.Lambda();
+
+          const updateTracing = (functionName, onErrorCallback, onSuccessCallback) => {
+              lambda.updateFunctionConfiguration({
+                FunctionName: functionName,
+                TracingConfig: { Mode: 'Active' }
+              }, function(err, data) {
+                if (err) onErrorCallback(err); // an error occurred
+                else     onSuccessCallback(data);           // successful response
+              });
+          };
+
+          exports.handler = (event, context, callback) => {
+              console.log('Received event:', JSON.stringify(event, null, 2));
+
+              [ process.env.GET_FUNCTION, process.env.PUT_FUNCTION, process.env.DELETE_FUNCTION ].forEach((f)=>{
+                updateTracing(f,(err)=>{
+                  // console.log("err:", err)
+                  callback(err)
+                },(success)=>{
+                  # console.log("success:", success)
+                });
+              })
+
+              callback(null,"SUCCESS")
+          }
